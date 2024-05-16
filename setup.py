@@ -3,7 +3,10 @@ from setuptools import find_packages, setup
 import setuptools
 
 if __name__ == "__main__":
-    setuptools.setup(py_modules = ["leafcutter"])
+    setup(
+        py_modules = ["leafcutter"],
+        packages=find_packages()
+    )
 
 if False: 
     setup(
