@@ -2,8 +2,8 @@ import pandas as pd
 import numpy as np
 import torch
 from collections import defaultdict, OrderedDict
-
 from leafcutter.differential_splicing.dm_glm import dirichlet_multinomial_anova, SimpleGuide, CleverGuide
+from timeit import default_timer as timer
 
 try: 
     from scipy.stats import false_discovery_control
@@ -25,7 +25,7 @@ def robust_fdr(ps, method = "bh"):
     p_adjust[mask] = false_discovery_control(ps[mask], method = method)
     return p_adjust
 
-def differential_splicing(counts, x, confounders = None, max_cluster_size=10, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10, device = "cpu", **kwargs):
+def differential_splicing(counts, x, confounders = None, max_cluster_size=10, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10, device = "cpu", timeit = False, **kwargs):
     '''Perform pairwise differential splicing analysis.
 
     counts: An [introns] x [samples] dataframe of counts. The rownames must be of the form chr:start:end:cluid. If the counts file comes from the leafcutter clustering code this should be the case already.
@@ -36,6 +36,8 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
     min_samples_per_intron: Ignore introns used (i.e. at least one supporting read) in fewer than n samples (Default = 5)
     min_samples_per_group: Require this many samples in each group to have at least min_coverage reads (Default = 4)
     min_coverage: Require min_samples_per_group samples in each group to have at least this many reads (Default = 20)
+    device: Device for pytorch opperations; can be "cpu" or "gpu" (Default = "cpu")
+    timeit: Whether or not to return a dictionary of times for the cluster processing and fitting steps (Default = False)
     kwargs: keyword arguments passed to dirichlet_multinomial_anova
     '''
     
@@ -51,7 +53,11 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
     
     torch_types = { "device" : device, "dtype" : torch.float } # would we ever want float64? 
     
+    cluster_time = 0
+    fitting_time = 0
+    results_time = 0
     for clu in cluster_ids:
+        cluster_start_time = timer()
         idx = clu == junc_meta.cluster
         cluster_size = idx.sum()
 
@@ -113,20 +119,24 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
         #np.savetxt("cached_xy/x_null_%s.tsv" % clu, x_null.numpy(), delimiter="\t")
         #np.savetxt("cached_xy/y_%s.tsv" % clu, y.numpy(), delimiter="\t")
 
-        #if (clu != 'clu_711_NA'): continue
-        try: 
+        try:
+            fitting_start_time = timer()
+            cluster_time += (fitting_start_time - cluster_start_time)
             loglr, df, lrtp, null_fit, full_fit, refit_null_flag = dirichlet_multinomial_anova(
                 x_full, 
                 x_null, 
                 y, 
                 **kwargs)
+            fitting_end_time = timer()
+            fitting_time += (fitting_end_time - fitting_start_time)
         except ValueError as value_error: # catch rare numerical errors
             statuses[clu] = "ValueError: " + str(value_error).replace('\n', ' ')
             continue
-        
+        results_start_time = timer()
         statuses[clu] = "Success"
 
         results[clu] = {
+            'status': statuses[clu],
             'loglr': loglr,
             'null_ll': -null_fit.loss,
             'null_exit_status': null_fit.exit_status,
@@ -140,7 +150,7 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
         P_null = null_fit.beta.shape[0]
         
         # extract effect sizes
-        logef = pd.DataFrame( full_fit.beta[-x_dim:,:].cpu().numpy().T, columns = x_subset.columns ).add_prefix('ef_')
+        logef = pd.DataFrame( full_fit.beta[-x_dim:,:].cpu().numpy().T, columns = x_subset.columns ).add_prefix('logef_')
         
         # calculate model-based PSI for each category. For continuous x this will correspond to being +1s.d. from the mean. 
         perturbed = torch.stack( [ normalize( (full_fit.beta[0,:] + full_fit.beta[P_null+i,:]).softmax(0) * full_fit.conc) for i in range(x_dim) ]).T.cpu().numpy()
@@ -153,7 +163,9 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
                 'psi_0' : normalize(full_fit.beta[0,:].softmax(0) * full_fit.conc).cpu().numpy()}), 
             logef, 
             perturbed], axis = 1)      
-    
+        results_end_time = timer()
+        results_time += (results_end_time - results_start_time)
+
     status_df = pd.DataFrame(statuses.values()) 
     status_df.index = statuses.keys()
     
@@ -161,7 +173,19 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
     cluster_table.index = results.keys()
     cluster_table['p.adjust'] = robust_fdr(cluster_table['p'], method = 'bh')
     
+    #add failed clusters
+    statuses_cluster_table = pd.DataFrame(statuses, index = statuses.keys())
+    statuses_cluster_table = statuses_cluster_table[statuses_cluster_table.index.isin(cluster_table.index) == False]
+    cluster_table = pd.concat([cluster_table, statuses_cluster_table])
+
     junc_table = pd.concat(junc_results.values(), axis=0) # note this should handle missing categories fine
-    #junc_table["deltapsi"] = junc_table['perturbed'] - junc_table['baseline']
     
-    return cluster_table, junc_table, status_df
+    for group in x_subset.columns:
+        junc_table[group + '_deltapsi'] = junc_table['psi_' + group] - junc_table['psi_0']
+    
+    time_dict = dict(zip(['cluster_filtering', 'fitting', 'results_processing'], [cluster_time, fitting_time, results_time]))
+    
+    if timeit:
+        return cluster_table, junc_table, status_df, time_dict
+    else:
+        return cluster_table, junc_table, status_df

@@ -19,10 +19,13 @@ parser.add_argument("-u", "--min_unique_vals", default=10, type=int, help="Only 
 #parser.add_argument("-p", "--num_threads", default=1, type=int, help="Number of threads to use [default %(default)s]")
 parser.add_argument("-e", "--exon_file", default=None, help="File defining known exons, example in data/gencode19_exons.txt.gz. Columns should be chr, start, end, strand, gene_name. Optional, only just to label the clusters.")
 parser.add_argument("--init", default="brr", help="One of One of brr (Bayesian ridge regression), rr (ridge regression), mult (multinomial logistic regression) or `0` (set to 0).")
+parser.add_argument("--timeit", default=False, type = bool, help="Whether to print out total time spent at different steps of leafcutter-ds. This is mostly for benchmarking or debugging.")
 
 # Parse the command-line arguments
 args = parser.parse_args()
 
+from timeit import default_timer as timer
+import_start = timer()
 import leafcutter
 from leafcutter.differential_splicing.differential_splicing import differential_splicing
 import leafcutter.utils
@@ -35,6 +38,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, scale
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
+import_end = timer()
 
 # Access the parsed arguments
 print(f"Loading counts from {args.counts_file}")
@@ -50,6 +54,7 @@ meta = pd.read_table(args.groups_file, header=None, sep = '\s+')
 meta = meta.rename(dict(zip([0, 1], ["sample", "group"])), axis = 1)
 
 # Check if there are more than 2 columns in the metadata DataFrame
+confounders = None
 if len(meta.columns) > 2:
     # Extract the confounders (columns 3 and onwards)
     confounders = meta.iloc[:, 2:]
@@ -63,7 +68,7 @@ if len(meta.columns) > 2:
             transformations.append((col, StandardScaler(), [col]))
         else:
             # Treat non-continuous variables as categorical and one-hot encode them
-            transformations.append((col, OneHotEncoder(drop='first', sparse=False), [col]))
+            transformations.append((col, OneHotEncoder(drop='first', sparse_output=False), [col]))
     # Create a column transformer to apply the specified transformations
     column_transformer = ColumnTransformer(transformations)
     # Fit and transform the confounders
@@ -71,17 +76,18 @@ if len(meta.columns) > 2:
     #remove samples with missing data (not in origial leafcutter as far as I can tell).
     confounders = pd.DataFrame(confounders, index = meta['sample']).dropna()
 
-all_samples = set(meta.loc[:,'sample'])
-removed_samples = all_samples - set(confounders.index)
-if len(removed_samples) != 0:
-    print('Samples removed due to missing values in covariates...')
-    print(','.join(list(removed_samples)))
+    all_samples = set(meta.loc[:,'sample'])
+    removed_samples = all_samples - set(confounders.index)
+    if len(removed_samples) != 0:
+        print('Samples removed due to missing values in covariates...')
+        print(','.join(list(removed_samples)))
 
-# Encode the "group" column as numeric (0 and 1)
-meta = meta[meta['sample'].isin(confounders.index)]
+    # Encode the "group" column as numeric (0 and 1)
+    meta = meta[meta['sample'].isin(confounders.index)]
 
-#if permute: numeric_x = np.random.permutation(numeric_x)
-counts = counts[confounders.index]
+    #if permute: numeric_x = np.random.permutation(numeric_x)
+    counts = counts[confounders.index]
+
 
 scale_factor = 1.
 
@@ -103,11 +109,14 @@ print("Settings:" + str(args))
 
 print("Running differential splicing analysis...")
 
-cluster_table, junc_table, status_df = differential_splicing(counts, meta["group"], confounders = confounders, max_cluster_size = args.max_cluster_size, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, init = args.init, device = "cpu" )
+setup_end = timer()
+if args.timeit == True:
+    cluster_table, junc_table, status_df, time_dict = differential_splicing(counts, meta["group"], confounders = confounders, max_cluster_size = args.max_cluster_size, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, init = args.init, device = "cpu", timeit = True)
+else:
+    cluster_table, junc_table, status_df = differential_splicing(counts, meta["group"], confounders = confounders, max_cluster_size = args.max_cluster_size, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, init = args.init, device = "cpu")
 
+wrap_up_start = timer()
 cluster_table['cluster'] = cluster_table.index
-
-print('Saving results...')
 
 # get cluster to chromsome mapping example chr2:37649:38658:clu_2_NA
 intron_meta = leafcutter.utils.get_intron_meta(counts.index)
@@ -138,6 +147,29 @@ clu_to_chrclu = dict(zip(intron_meta["cluster"], intron_meta["chr"] + ':' + intr
 cluster_table['cluster'] = cluster_table['cluster'].map(clu_to_chrclu) 
 
 print('Saving results...')
-cluster_table.loc[:,('cluster', 'loglr', 'df', 'p', 'p.adjust', 'genes')].to_csv(output_prefix + "_cluster_significance.tsv", sep = '\t', index = False, na_rep='NA')
+cluster_table.loc[:,('cluster', 'status', 'loglr', 'df', 'p', 'p.adjust', 'genes')].to_csv(output_prefix + "_cluster_significance.txt", sep = '\t', index = False, na_rep='NA')
 
-junc_table.to_csv(output_prefix + "_effect_sizes.tsv", sep = '\t', index = False, na_rep='NA')
+#just rearranging junction columns for backwards compatibility
+rename_juncs = dict(zip(list(junc_table.columns), list(junc_table.columns)))
+rename_juncs['psi_0'] = 'psi_' + args.baseline_group
+junc_table.rename(rename_juncs, axis = 1, inplace = True)
+logef_cols = list(junc_table.columns[junc_table.columns.str.startswith('logef_')])
+psi_cols = list(junc_table.columns[junc_table.columns.str.startswith('psi_')])
+deltapsi_cols = list(junc_table.columns[junc_table.columns.str.startswith('deltapsi_')])
+
+junc_table.loc[:,['cluster', 'intron'] + logef_cols + psi_cols + deltapsi_cols].to_csv(output_prefix + "_effect_sizes.txt", sep = '\t', index = False, na_rep='NA')
+
+wrap_up_end = timer()
+if args.timeit == True:
+    print('Time to import stuff:')
+    print(round((import_end - import_start), 3))
+    print('Time to setup stuff:')
+    print(round((setup_end - import_end), 3))
+    print('Time spent filtering clusters:')
+    print(round(time_dict['cluster_filtering'], 3))
+    print('Time spent fitting model:')
+    print(round(time_dict['fitting'], 3))
+    print('Time spent summarizing results:')
+    print(round(time_dict['results_processing'], 3))
+    print('Time spent wrapping up:')
+    print(round((wrap_up_end - wrap_up_start), 3))

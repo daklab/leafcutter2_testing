@@ -36,6 +36,10 @@ def pool_junc_reads(flist, options):
         if not os.path.isfile(libl.strip()):
             raise ValueError("File %s does not exist."%lib)
 
+    strandSkipped = 0
+    chromSkipped = 0
+    maxIntronSkipped = 0
+    nIntrons = 0
     for k,libl in enumerate(flist, 1):
         lib = libl.strip()
         if options.verbose:
@@ -56,16 +60,34 @@ def pool_junc_reads(flist, options):
                 print(ln)
                 continue
             # regtools -s 0 (unstranded) now puts "?" in strand field when strand is ambiguous
-            if strand == "?": continue
-            if not nochromcheck and (chrom not in chromLst): continue  # excludes ALT contigs etc
+            if strand == "?":
+                strandSkipped += 1
+                continue # we should probably throw a warning here .....
+            if not nochromcheck and (chrom not in chromLst):
+                chromSkipped += 1
+                continue  # excludes ALT contigs etc
             Aoff, Boff = blockSize.split(",")
             A, B = int(A)+int(Aoff), int(B)-int(Boff)+1
-
-            if B-A > int(maxIntronLen): continue
-            try: by_chrom[(chrom,strand)][(A,B)] = int(counts) + by_chrom[(chrom,strand)][(A,B)]
+            if B-A > int(maxIntronLen):
+                maxIntronSkipped += 1
+                continue
+            try:
+                by_chrom[(chrom,strand)][(A,B)] = int(counts) + by_chrom[(chrom,strand)][(A,B)]
+                nIntrons += 1
             except:
-                try: by_chrom[(chrom,strand)][(A,B)] = int(counts)
-                except: by_chrom[(chrom,strand)] = {(A,B):int(counts)}
+                try:
+                    by_chrom[(chrom,strand)][(A,B)] = int(counts)
+                    nIntrons += 1
+                except:
+                    by_chrom[(chrom,strand)] = {(A,B):int(counts)}
+                    nIntrons += 1
+
+    # print stats on how many of the introns are skipped because of filters
+    sys.stderr.write(f"{strandSkipped} of the intron entries were skipped because of RNA strands being ?\n")
+    sys.stderr.write(f"{chromSkipped} of the intron entries were skipped because of they are not human autosomes or sex chromosomes\n")
+    sys.stderr.write(f"{maxIntronSkipped} of the intron entries were skipped because they exceeded the maximum intron size\n")
+    sys.stderr.write(f"{nIntrons} of the intron entries were processed successfully\n")
+
 
     fout = open(outFile, 'w')
     Ncluster = 0
@@ -101,7 +123,6 @@ def sort_junctions(libl, options):
         refined_cluster = options.cluster
     runName = "%s/%s"%(rundir, outPrefix)
 
-
     exons, cluExons = {}, {}
     cluN = 0
 
@@ -116,7 +137,7 @@ def sort_junctions(libl, options):
             if cluN not in cluExons:
                 cluExons[cluN] = []
             cluExons[cluN].append((chrom, A, B))
-
+    
     merges = {}
     for ll in libl:
         lib=ll.rstrip()

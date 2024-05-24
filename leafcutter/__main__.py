@@ -10,3 +10,4 @@ def leafcutter_cluster():
 def leafcutter_ds():
     script_pth = pkg_dir / "differential_splicing" / "leafcutter_ds.py"
     run_path(str(script_pth), run_name="__main__")
+

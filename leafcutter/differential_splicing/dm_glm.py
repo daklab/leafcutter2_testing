@@ -13,6 +13,8 @@ from leafcutter.differential_splicing.optim import fit_with_lbfgs
 
 from dataclasses import dataclass
 
+#torch.set_num_threads(20)
+
 @dataclass
 class LeafcutterFit:
     """
