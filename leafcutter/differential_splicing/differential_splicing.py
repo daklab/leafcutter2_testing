@@ -180,8 +180,8 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
 
     junc_table = pd.concat(junc_results.values(), axis=0) # note this should handle missing categories fine
     
-    for group in x_subset.columns:
-        junc_table[group + '_deltapsi'] = junc_table['psi_' + group] - junc_table['psi_0']
+    for group in list(x_subset.columns):
+        junc_table['deltapsi_' + group] = junc_table['psi_' + group] - junc_table['psi_0']
     
     time_dict = dict(zip(['cluster_filtering', 'fitting', 'results_processing'], [cluster_time, fitting_time, results_time]))
     
