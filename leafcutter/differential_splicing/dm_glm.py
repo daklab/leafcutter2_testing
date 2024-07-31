@@ -293,8 +293,7 @@ def simple_simulation(N, P, J, total_count = 100, conc = 10.):
     true_beta_norm = b - b.mean(1, keepdim = True)
     dm = dist.DirichletMultinomial(g * conc, total_count = total_count)
     y = dm.sample()
-    return(x,y,true_beta_norm,g)
-
+    return x,y,true_beta_norm,g
 
 def dirichlet_multinomial_anova(x_full, x_null, y, init = "brr", **kwargs): 
     """

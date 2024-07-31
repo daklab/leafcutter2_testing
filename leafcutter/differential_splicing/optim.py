@@ -2,7 +2,7 @@ import torch
 
 import pyro
 from torch.distributions import constraints
-from pyro.infer import SVI, Trace_ELBO
+from pyro.infer import SVI, Trace_ELBO, JitTrace_ELBO
 
 import numpy as np
 
@@ -429,6 +429,8 @@ def fit_with_lbfgs(model, guide, x, y, outer_iterations = 1, **lbfgs_kwargs):
     ps = pyro.get_param_store()
     params = [ p.unconstrained() for p in ps.values() ] # want to optimize in the constrained space 
     loss_fn = Trace_ELBO().differentiable_loss # JitTrace is actually slower it seems
+    #print("Using JitTrace") 
+    #loss_fn = JitTrace_ELBO().differentiable_loss
     
     # defaults: lr=1, max_iter=20, max_eval=None, tolerance_grad=1e-07, tolerance_change=1e-09, history_size=100, line_search_fn=None
     optimizer = MyLBFGS(params, **lbfgs_kwargs) #lr=0.05, max_iter=inner_iterations, tolerance_grad=1e-4, history_size = 20)

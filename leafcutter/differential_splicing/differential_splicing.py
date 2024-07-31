@@ -5,6 +5,8 @@ from collections import defaultdict, OrderedDict
 from leafcutter.differential_splicing.dm_glm import dirichlet_multinomial_anova, SimpleGuide, CleverGuide
 from timeit import default_timer as timer
 
+import concurrent.futures as cnc
+
 try: 
     from scipy.stats import false_discovery_control
 except: 
@@ -43,11 +45,6 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
     
     normalize = lambda g: g/g.sum()
 
-    results = OrderedDict()
-    junc_results = OrderedDict()
-    
-    statuses = OrderedDict()
-
     junc_meta = counts.index.to_series().str.split(':',expand=True).rename(columns = {0:"chr", 1:"start", 2:"end", 3:"cluster"})
     cluster_ids = junc_meta.cluster.unique()
     
@@ -56,49 +53,43 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
     cluster_time = 0
     fitting_time = 0
     results_time = 0
-    for clu in cluster_ids:
+
+    def task(clu): 
         cluster_start_time = timer()
         idx = clu == junc_meta.cluster
         cluster_size = idx.sum()
 
         if cluster_size>max_cluster_size: 
-            statuses[clu] = "Too many introns in cluster"
-            continue
+            return(["Too many introns in cluster"])
         if cluster_size <= 1: 
-            statuses[clu] = "<=1 junction in cluster"
-            continue
+            return(["<=1 junction in cluster"])
         cluster_counts=np.array(counts.loc[ idx,: ]).transpose()
         sample_totals=cluster_counts.sum(1)
         samples_to_use=sample_totals>0
         if samples_to_use.sum()<=1: 
-            statuses[clu] = "<=1 sample with coverage>0"
-            continue
+            return(["<=1 sample with coverage>0"])
         sample_totals=sample_totals[samples_to_use]
         if (sample_totals>=min_coverage).sum()<=1:
-            statuses[clu] = "<=1 sample with coverage>min_coverage"
-            continue
+            return(["<=1 sample with coverage>min_coverage"])
         # this might be cleaner using anndata
         x_subset=x[samples_to_use] # assumes one covariate? ah no, covariates handled later 
         cluster_counts=cluster_counts[samples_to_use,]
         introns_to_use=(cluster_counts>0).sum(0)>=min_samples_per_intron # only look at introns used by at least 5 samples
         if introns_to_use.sum()<2:
-            statuses[clu] = "<2 introns used in >=min_samples_per_intron samples"
-            continue
+            return(["<2 introns used in >=min_samples_per_intron samples"])
         cluster_counts=cluster_counts[:,introns_to_use]
         
         # this is the only part that depends on x
         unique_vals, ta = np.unique(x_subset[sample_totals>=min_coverage], return_counts = True)
         if x_subset.dtype.kind in 'OUS': # categorical x
             if (ta >= min_samples_per_group).sum()<2: # at least two groups have this
-                statuses[clu] = "Not enough valid samples"
-                continue
+                return(["Not enough valid samples"])
             x_subset = pd.get_dummies(x_subset, drop_first = True)
             to_drop = (x_subset == 0).all()
             x_subset = x_subset.loc[:, ~to_drop ] # remove empty groups
         else: # continuous x
             if len(unique_vals) < min_unique_vals:
-                statuses[clu] = "Not enough valid samples"
-                continue
+                return(["Not enough valid samples"])
             x_subset = pd.DataFrame( {"x" : x_subset} )
         
         x_only = torch.tensor(x_subset.to_numpy(), **torch_types)
@@ -115,37 +106,19 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
         
         y = torch.tensor(cluster_counts, **torch_types)
 
-        #np.savetxt("cached_xy/x_full_%s.tsv" % clu, x_full.numpy(), delimiter="\t")
-        #np.savetxt("cached_xy/x_null_%s.tsv" % clu, x_null.numpy(), delimiter="\t")
-        #np.savetxt("cached_xy/y_%s.tsv" % clu, y.numpy(), delimiter="\t")
+        #fitting_start_time = timer()
+        #cluster_time += (fitting_start_time - cluster_start_time)
+        loglr, df, lrtp, null_fit, full_fit, refit_null_flag = dirichlet_multinomial_anova(
+            x_full, 
+            x_null, 
+            y, 
+            **kwargs)
+        #fitting_end_time = timer()
+        #fitting_time += (fitting_end_time - fitting_start_time)
 
-        try:
-            fitting_start_time = timer()
-            cluster_time += (fitting_start_time - cluster_start_time)
-            loglr, df, lrtp, null_fit, full_fit, refit_null_flag = dirichlet_multinomial_anova(
-                x_full, 
-                x_null, 
-                y, 
-                **kwargs)
-            fitting_end_time = timer()
-            fitting_time += (fitting_end_time - fitting_start_time)
-        except ValueError as value_error: # catch rare numerical errors
-            statuses[clu] = "ValueError: " + str(value_error).replace('\n', ' ')
-            continue
-        results_start_time = timer()
-        statuses[clu] = "Success"
+        #results_start_time = timer()
 
-        results[clu] = {
-            'status': statuses[clu],
-            'loglr': loglr,
-            'null_ll': -null_fit.loss,
-            'null_exit_status': null_fit.exit_status,
-            'full_ll': -full_fit.loss,
-            'full_exit_status': full_fit.exit_status,
-            'df': df,
-            'p': lrtp
-        }
-        
+
         x_dim = x_subset.shape[1]
         P_null = null_fit.beta.shape[0]
         
@@ -156,31 +129,51 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
         perturbed = torch.stack( [ normalize( (full_fit.beta[0,:] + full_fit.beta[P_null+i,:]).softmax(0) * full_fit.conc) for i in range(x_dim) ]).T.cpu().numpy()
         perturbed = pd.DataFrame( perturbed, columns = x_subset.columns ).add_prefix('psi_')
         
-        junc_results[clu] = pd.concat(
+        junc_results = pd.concat(
             [pd.DataFrame({
                 'cluster' : [clu] * y.shape[1], 
                 'intron' : idx[idx][introns_to_use].index, 
                 'psi_0' : normalize(full_fit.beta[0,:].softmax(0) * full_fit.conc).cpu().numpy()}), 
             logef, 
-            perturbed], axis = 1)      
-        results_end_time = timer()
-        results_time += (results_end_time - results_start_time)
+            perturbed], axis = 1)
 
-    status_df = pd.DataFrame(statuses.values()) 
-    status_df.index = statuses.keys()
+        return [
+            "Success", 
+            {
+                'loglr': loglr,
+                'null_ll': -null_fit.loss,
+                'null_exit_status': null_fit.exit_status,
+                'full_ll': -full_fit.loss,
+                'full_exit_status': full_fit.exit_status,
+                'df': df,
+                'p': lrtp
+            }, 
+            junc_results]
     
+        #results_end_time = timer()
+        #results_time += (results_end_time - results_start_time)
+
+    #with cnc.ThreadPoolExecutor() as executor:
+    #    pool_results = list(executor.map(task, cluster_ids))
+    pool_results = [ task(clu) for clu in cluster_ids ]
+
+    status_df = pd.DataFrame({ "status" : [ g[0] for g in pool_results ]}) 
+    status_df.index = cluster_ids
+
+    results = { k:v[1] for k,v in zip(cluster_ids, pool_results) if v[0] == "Success" }
     cluster_table = pd.DataFrame(results.values()) 
     cluster_table.index = results.keys()
     cluster_table['p.adjust'] = robust_fdr(cluster_table['p'], method = 'bh')
     
     #add failed clusters
     statuses_cluster_table = pd.DataFrame(statuses, index = statuses.keys())
-    statuses_cluster_table = statuses_cluster_table[statuses_cluster_table.index.isin(cluster_table.index) == False]
+    statuses_cluster_table = statuses_cluster_table[~statuses_cluster_table.index.isin(cluster_table.index)]
     cluster_table = pd.concat([cluster_table, statuses_cluster_table])
 
+    junc_results = [ v[2] for v in pool_results if v[0] == "Success" ]
     junc_table = pd.concat(junc_results.values(), axis=0) # note this should handle missing categories fine
     
-    for group in list(x_subset.columns):
+    for group in list(x.columns):
         junc_table['deltapsi_' + group] = junc_table['psi_' + group] - junc_table['psi_0']
     
     time_dict = dict(zip(['cluster_filtering', 'fitting', 'results_processing'], [cluster_time, fitting_time, results_time]))
