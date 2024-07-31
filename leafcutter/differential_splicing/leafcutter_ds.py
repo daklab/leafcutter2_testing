@@ -20,6 +20,8 @@ parser.add_argument("-u", "--min_unique_vals", default=10, type=int, help="Only 
 parser.add_argument("-e", "--exon_file", default=None, help="File defining known exons, example in data/gencode19_exons.txt.gz. Columns should be chr, start, end, strand, gene_name. Optional, only just to label the clusters.")
 parser.add_argument("--init", default="brr", help="One of One of brr (Bayesian ridge regression), rr (ridge regression), mult (multinomial logistic regression) or `0` (set to 0).")
 parser.add_argument("--timeit", default=False, type = bool, help="Whether to print out total time spent at different steps of leafcutter-ds. This is mostly for benchmarking or debugging.")
+parser.add_argument("-p", "--num_threads", default=1, type=int, help="Number of threads to use  [default %(default)s]")
+  
 
 # Parse the command-line arguments
 #args = parser.parse_args()
@@ -111,10 +113,13 @@ print("Settings:" + str(args))
 print("Running differential splicing analysis...")
 
 setup_end = timer()
-if args.timeit == True:
-    cluster_table, junc_table, status_df, time_dict = differential_splicing(counts, meta["group"], confounders = confounders, max_cluster_size = args.max_cluster_size, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, init = args.init, device = "cpu", timeit = True)
+res = differential_splicing(counts, meta["group"], confounders = confounders, max_cluster_size = args.max_cluster_size, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, init = args.init, device = "cpu", num_cores = args.num_threads, timeit = args.timeit)
+
+if args.timeit: 
+    cluster_table, junc_table, status_df, time_dict = res
 else:
-    cluster_table, junc_table, status_df = differential_splicing(counts, meta["group"], confounders = confounders, max_cluster_size = args.max_cluster_size, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, init = args.init, device = "cpu")
+    cluster_table, junc_table, status_df = res
+
 print("Fit Time", timer() - setup_end)
 
 wrap_up_start = timer()

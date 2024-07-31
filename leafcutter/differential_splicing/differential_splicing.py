@@ -32,7 +32,7 @@ def robust_fdr(ps, method = "bh"):
     p_adjust[mask] = false_discovery_control(ps[mask], method = method)
     return p_adjust
     
-def task(inp, x, torch_types, kwargs, num_cores = 1, confounders = None, max_cluster_size=10, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10): 
+def task(inp, x, torch_types, kwargs, confounders = None, max_cluster_size=10, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10): 
 
     normalize = lambda g: g/g.sum()
 
@@ -134,7 +134,7 @@ def task(inp, x, torch_types, kwargs, num_cores = 1, confounders = None, max_clu
         junc_results]
 
 
-def differential_splicing(counts, x, confounders = None, max_cluster_size=10, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10, device = "cpu", timeit = False, **kwargs):
+def differential_splicing(counts, x, confounders = None, max_cluster_size=10, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10, device = "cpu", timeit = False, num_cores = 1,  **kwargs):
     '''Perform pairwise differential splicing analysis.
 
     counts: An [introns] x [samples] dataframe of counts. The rownames must be of the form chr:start:end:cluid. If the counts file comes from the leafcutter clustering code this should be the case already.
@@ -162,24 +162,13 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
     idx = [ clu == junc_meta.cluster for clu in cluster_ids ]
     cluster_counts = [ np.array(counts.loc[ i,: ]).transpose() for i in idx ]
     
-        #results_end_time = timer()
-        #results_time += (results_end_time - results_start_time)
-
-    #with cnc.ThreadPoolExecutor() as executor:
-    #    pool_results = list(executor.map(task, cluster_ids))
-    # pool_results = [ task(clu) for clu in cluster_ids ]
-
     task_task = partial(task, torch_types = torch_types, 
             kwargs = kwargs, 
             x = x, confounders = confounders, max_cluster_size=max_cluster_size, min_samples_per_intron=min_samples_per_intron, min_samples_per_group=min_samples_per_group, min_coverage=min_coverage, min_unique_vals = min_coverage)
 
-    if False: 
-        with Pool(processes=20) as pool:
-            pool_results = pool.map(task_task, zip(cluster_ids, cluster_counts, idx))
+    with Pool(processes=num_cores) as pool:
+        pool_results = pool.map(task_task, zip(cluster_ids, cluster_counts, idx))
 
-    if True: 
-        pool_results = Parallel(n_jobs=20)(delayed(task_task)(g) for g in zip(cluster_ids, cluster_counts, idx))
-    
     status_df = pd.DataFrame({ "status" : [ g[0] for g in pool_results ]}) 
     status_df.index = cluster_ids
 
