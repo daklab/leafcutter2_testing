@@ -22,7 +22,8 @@ parser.add_argument("--init", default="brr", help="One of One of brr (Bayesian r
 parser.add_argument("--timeit", default=False, type = bool, help="Whether to print out total time spent at different steps of leafcutter-ds. This is mostly for benchmarking or debugging.")
 
 # Parse the command-line arguments
-args = parser.parse_args()
+#args = parser.parse_args()
+args = parser.parse_args("-0 male --exon_file gencode.v43.basic.annotation_exons.txt.gz -o python_sex --timeit True Geuvadis_M_vs_F_perind_numers.counts_sample.gz sex_groups.txt".split())
 
 from timeit import default_timer as timer
 import_start = timer()
@@ -114,6 +115,7 @@ if args.timeit == True:
     cluster_table, junc_table, status_df, time_dict = differential_splicing(counts, meta["group"], confounders = confounders, max_cluster_size = args.max_cluster_size, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, init = args.init, device = "cpu", timeit = True)
 else:
     cluster_table, junc_table, status_df = differential_splicing(counts, meta["group"], confounders = confounders, max_cluster_size = args.max_cluster_size, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, init = args.init, device = "cpu")
+print("Fit Time", timer() - setup_end)
 
 wrap_up_start = timer()
 cluster_table['cluster'] = cluster_table.index
