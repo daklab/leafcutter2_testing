@@ -24,8 +24,8 @@ parser.add_argument("-p", "--num_threads", default=1, type=int, help="Number of 
   
 
 # Parse the command-line arguments
-#args = parser.parse_args()
-args = parser.parse_args("-0 male --exon_file gencode.v43.basic.annotation_exons.txt.gz -o python_sex --timeit True Geuvadis_M_vs_F_perind_numers.counts_sample.gz sex_groups.txt".split())
+args = parser.parse_args()
+#args = parser.parse_args("-0 male --exon_file gencode.v43.basic.annotation_exons.txt.gz -o python_sex --timeit True Geuvadis_M_vs_F_perind_numers.counts_sample.gz sex_groups.txt".split())
 
 from timeit import default_timer as timer
 import_start = timer()
@@ -108,7 +108,7 @@ else: # continuous
     scale_factor = np.std(meta["group"], ddof=0)
     meta["group"] = scale(meta["group"])
 
-print("Settings:" + str(args))
+print("Settings: " + str(args))
 
 print("Running differential splicing analysis...")
 
