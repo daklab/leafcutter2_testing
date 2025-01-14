@@ -2,6 +2,7 @@ import torch
 
 import pyro
 import pyro.distributions as dist
+
 from torch.distributions import constraints
 
 import numpy as np
