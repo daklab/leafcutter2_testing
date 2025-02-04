@@ -3,10 +3,12 @@ import numpy as np
 import torch
 from collections import defaultdict, OrderedDict
 from leafcutter.differential_splicing.dm_glm import dirichlet_multinomial_anova, SimpleGuide, CleverGuide
+from leafcutter.differential_splicing import bayes_glm
 from timeit import default_timer as timer
-
+from tqdm import tqdm
 from multiprocessing import Pool # 33s to fit. 
 from functools import partial
+import pyro.distributions as dist
 
 #import concurrent.futures as cnc # not compatible with pyro
 #from pathos.multiprocessing import ProcessingPool as Pool # 24s
@@ -193,3 +195,115 @@ def differential_splicing(counts, x, confounders = None, max_cluster_size=10, mi
         return cluster_table, junc_table, status_df, time_dict
     else:
         return cluster_table, junc_table, status_df
+
+def task_junc(clu, cluster_counts, idx, x, torch_types, kwargs, confounders = None, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10): 
+
+    normalize = lambda g: g/g.sum()
+
+    cluster_start_time = timer()
+
+    cluster_size = cluster_counts.shape[1]
+
+    if cluster_size <= 1: 
+        return(["<=1 junction in cluster"])
+
+    sample_totals=cluster_counts.sum(1)
+    samples_to_use=sample_totals>0
+    if samples_to_use.sum()<=1: 
+        return(["<=1 sample with coverage>0"])
+    sample_totals=sample_totals[samples_to_use]
+    if (sample_totals>=min_coverage).sum()<=1:
+        return(["<=1 sample with coverage>min_coverage"])
+    # this might be cleaner using anndata
+    x_subset=x[samples_to_use] # assumes one covariate? ah no, covariates handled later 
+    cluster_counts=cluster_counts[samples_to_use,]
+    introns_to_use=(cluster_counts>0).sum(0)>=min_samples_per_intron # only look at introns used by at least 5 samples
+    if introns_to_use.sum()<2:
+        return(["<2 introns used in >=min_samples_per_intron samples"])
+    cluster_counts=cluster_counts[:,introns_to_use]
+    
+    # this is the only part that depends on x
+    unique_vals, ta = np.unique(x_subset[sample_totals>=min_coverage], return_counts = True)
+    if x_subset.dtype.kind in 'OUS': # categorical x
+        if (ta >= min_samples_per_group).sum()<2: # at least two groups have this
+            return(["Not enough valid samples"])
+    else: # continuous x
+        if len(unique_vals) < min_unique_vals:
+            return(["Not enough valid samples"])
+    
+    return ["Success", introns_to_use]
+
+
+def differential_splicing_junc(counts, x, confounders = None, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10, device = "cpu", timeit = False, num_cores = 1,  **kwargs):
+    '''Perform pairwise differential splicing analysis.
+
+    counts: An [introns] x [samples] dataframe of counts. The rownames must be of the form chr:start:end:cluid. If the counts file comes from the leafcutter clustering code this should be the case already.
+    x: A [samples] numeric pandas Series, should typically be 0s and 1s, although in principle scaling shouldn't matter.
+    confounders: A [samples] x [confounders] pandas dataframe to be controlled for in the GLM. Factors should already have been converted to a 1-of-(K-1) encoding
+    ####, e.g. using model.matrix (see scripts/leafcutter_ds.R for how to do this). Can be None, implying no covariates are controlled for.
+    max_cluster_size: Don't test clusters with more introns than this (Default = 10)
+    min_samples_per_intron: Ignore introns used (i.e. at least one supporting read) in fewer than n samples (Default = 5)
+    min_samples_per_group: Require this many samples in each group to have at least min_coverage reads (Default = 4)
+    min_coverage: Require min_samples_per_group samples in each group to have at least this many reads (Default = 20)
+    device: Device for pytorch opperations; can be "cpu" or "gpu" (Default = "cpu")
+    timeit: Whether or not to return a dictionary of times for the cluster processing and fitting steps (Default = False)
+    kwargs: keyword arguments passed to dirichlet_multinomial_anova
+    '''
+
+    junc_meta = counts.index.to_series().str.split(':',expand=True).rename(columns = {0:"chr", 1:"start", 2:"end", 3:"cluster"})
+    cluster_ids = junc_meta.cluster.unique()
+    normalize = lambda g: g/g.sum()
+    
+    torch_types = { "device" : device, "dtype" : torch.float } # would we ever want float64? 
+    
+    cluster_time = 0
+    fitting_time = 0
+    results_time = 0
+
+    print("Preprocessing data")
+    y = []
+    n = []
+    juncs = []
+    for clu in tqdm(cluster_ids):
+        idx = clu == junc_meta.cluster
+        cluster_counts = np.array(counts.loc[ idx,: ]).transpose()
+        res = task_junc(clu, cluster_counts, idx, torch_types = torch_types, kwargs = kwargs, x = x, confounders = confounders, min_samples_per_intron=min_samples_per_intron, min_samples_per_group=min_samples_per_group, min_coverage=min_coverage, min_unique_vals = min_coverage)
+        if res[0] == "Success": 
+            introns_to_use = res[1]
+            y_here = cluster_counts[:,introns_to_use]
+            n_here = np.broadcast_to(y_here.sum(1)[:, np.newaxis], y_here.shape)
+            n.append(torch.tensor(n_here, **torch_types))
+            y.append(torch.tensor(y_here, **torch_types))
+            juncs.append(junc_meta.cluster[idx][introns_to_use])
+
+    if len(n)==0: 
+        raise ValueError("No testable junctions") 
+    y = torch.cat(y, dim = 1)
+    n = torch.cat(n, dim = 1)
+    juncs = pd.concat(juncs)
+
+    if x.dtype.kind in 'OUS': # categorical x
+        x = pd.get_dummies(x, drop_first = True)
+
+    x_only = torch.tensor(x.to_numpy(), **torch_types)
+    intercept = torch.ones(x_only.shape[0], 1, **torch_types) 
+    if confounders is None:
+        x_full = torch.cat((intercept, x_only), axis = 1)
+        x_null = intercept
+    else:
+        these_confounders = torch.tensor(confounders.iloc[samples_to_use].to_numpy(), **torch_types)
+        #filter out confounders with no standard deviation
+        these_confounders = these_confounders[:,torch.std(these_confounders, dim = 0) != 0.]
+        x_full = torch.cat((intercept, these_confounders, x_only), axis = 1)
+        x_null = torch.cat((intercept, these_confounders), axis = 1)
+
+    sas = bayes_glm.SpikeAndSlabModel(
+        gamma_shape = dist.Gamma(2., 1.), 
+        gamma_rate = dist.Gamma(2., 10.), 
+        beta_scale = dist.HalfCauchy(1.),
+        per_hyp_conc = True
+    )
+    losses_null, losses_full, losses = sas.fit(x_null, x_full, y, n, alpha = 0., num_particles = 1, **kwargs)
+    marg_prob, log_bayes_factor = sas.estimate_marginal_posterior(x_null, x_full, y, n, alpha = 1.)
+    
+    return pd.DataFrame({"junc":juncs, "prob_diff":marg_prob, "log_bayes_factor":log_bayes_factor})

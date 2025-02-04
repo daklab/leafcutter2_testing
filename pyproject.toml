@@ -19,3 +19,4 @@ dependencies = [
 [project.scripts]
 leafcutter-ds = 'leafcutter.__main__:leafcutter_ds'
 leafcutter-cluster = 'leafcutter.__main__:leafcutter_cluster'
+leafcutter-bayes = 'leafcutter.__main__:leafcutter_bayes'

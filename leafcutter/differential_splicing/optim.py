@@ -371,13 +371,13 @@ class MyLBFGS(torch.optim.LBFGS):
 
         return losses # this implicitly return #iterations == len(losses)
 
-def fit_with_SVI(model, guide, data, iterations = 1500, loss_tol = 1e-3, adam_opts = {"lr": 0.02}):
+def fit_with_SVI(model, guide, data, iterations = 1500, loss_tol = 1e-3, adam_opts = {"lr": 0.02}, loss_func = Trace_ELBO()):
     """
     Fit the model using "SVI": but really there is no randomness so this should just be equivalent to stochastic gradient descent (SGD)
     """
     pyro.clear_param_store()
     optimizer = pyro.optim.Adam(adam_opts)
-    svi = SVI(model, guide, optimizer, Trace_ELBO())
+    svi = SVI(model, guide, optimizer, loss_func)
     losses = []
     old_loss = np.inf
     for i in range(iterations):
