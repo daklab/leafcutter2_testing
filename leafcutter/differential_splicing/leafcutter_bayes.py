@@ -24,8 +24,8 @@ parser.add_argument("-p", "--num_threads", default=1, type=int, help="Number of 
   
 
 # Parse the command-line arguments
-#args = parser.parse_args("-o real muris_leaf_perind_numers.counts.gz group_leaf.txt".split())
-args = parser.parse_args()
+args = parser.parse_args("-o real muris_leaf_perind_numers.counts.gz group_leaf_random9.txt".split())
+#args = parser.parse_args()
 
 from timeit import default_timer as timer
 import_start = timer()
@@ -104,9 +104,14 @@ print("Settings: " + str(args))
 print("Running differential splicing analysis.")
 
 setup_end = timer()
-junc_table = differential_splicing_junc(counts, meta["group"], confounders = confounders, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, device = "cpu", num_cores = args.num_threads, timeit = args.timeit)
+losses_null, losses_full, losses, junc_table = differential_splicing_junc(counts, meta["group"], confounders = confounders, min_samples_per_intron = args.min_samples_per_intron, min_samples_per_group = args.min_samples_per_group, min_coverage = args.min_coverage, device = "cpu", num_cores = args.num_threads, timeit = args.timeit)
 
-junc_table.to_csv(output_prefix + "_junction_results.txt", sep = '\t', index = False, na_rep='NA')
+junc_table.to_csv(args.output_prefix + "_junction_results.txt", sep = '\t', index = False, na_rep='NA')
+
+import matplotlib.pyplot as plt
+plt.plot(losses_null)
+plt.plot(losses_full)
+plt.plot(losses)
 
 if False: 
     import matplotlib.pyplot as plt

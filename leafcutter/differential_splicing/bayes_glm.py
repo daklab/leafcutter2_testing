@@ -162,11 +162,12 @@ def estimate_marginal_posterior(logw, alpha, pi = None):
         one_minus_alpha = 1. - alpha
         log_marg = (one_minus_alpha * logw).logsumexp(0) - torch.log(torch.tensor(num_samples))
         log_marg /= one_minus_alpha
+    log_bayes_factor = log_marg[1] - log_marg[0]
     if pi is not None:
         log_marg += pi
     log_marg -= log_marg.logsumexp(0, keepdim = True)
     prob = log_marg.exp()
-    return prob[1], log_marg[1]
+    return prob[1], log_bayes_factor
 
 def effective_sample_size(logw):
     # \text{ESS} = \frac{(\sum_{i=1}^N w_i)^2}{\sum_{i=1}^N w_i^2}

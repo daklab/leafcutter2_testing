@@ -234,7 +234,7 @@ def task_junc(clu, cluster_counts, idx, x, torch_types, kwargs, confounders = No
     return ["Success", introns_to_use]
 
 
-def differential_splicing_junc(counts, x, confounders = None, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10, device = "cpu", timeit = False, num_cores = 1,  **kwargs):
+def differential_splicing_junc(counts, x, confounders = None, min_samples_per_intron=5, min_samples_per_group=4, min_coverage=0, min_unique_vals = 10, device = "cpu", timeit = False, num_cores = 1, learn_conc_prior = False, learn_beta_scale_prior = True,  **kwargs):
     '''Perform pairwise differential splicing analysis.
 
     counts: An [introns] x [samples] dataframe of counts. The rownames must be of the form chr:start:end:cluid. If the counts file comes from the leafcutter clustering code this should be the case already.
@@ -298,12 +298,11 @@ def differential_splicing_junc(counts, x, confounders = None, min_samples_per_in
         x_null = torch.cat((intercept, these_confounders), axis = 1)
 
     sas = bayes_glm.SpikeAndSlabModel(
-        gamma_shape = dist.Gamma(2., 1.), 
-        gamma_rate = dist.Gamma(2., 10.), 
-        beta_scale = dist.HalfCauchy(1.),
-        per_hyp_conc = True
+        gamma_shape = dist.Gamma(2., 1.) if learn_conc_prior else 2., 
+        gamma_rate = dist.Gamma(2., 10.), if learn_conc_prior else 0.2, 
+        beta_scale = dist.HalfCauchy(1.) if learn_beta_scale_prior else 2. 
     )
     losses_null, losses_full, losses = sas.fit(x_null, x_full, y, n, alpha = 0., num_particles = 1, **kwargs)
     marg_prob, log_bayes_factor = sas.estimate_marginal_posterior(x_null, x_full, y, n, alpha = 1.)
     
-    return pd.DataFrame({"junc":juncs, "prob_diff":marg_prob, "log_bayes_factor":log_bayes_factor})
+    return losses_null, losses_full, losses, pd.DataFrame({"junc":juncs, "prob_diff":marg_prob, "log_bayes_factor":log_bayes_factor})
